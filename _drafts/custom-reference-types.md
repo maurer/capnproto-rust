@@ -25,23 +25,21 @@ then a `foo::Builder<'a>`
 provides access to a writable location
 in arena-allocated memory that contains
 a `Foo` in [Cap'n Proto format](https://kentonv.github.io/capnproto/encoding.html).
-To protect access to this memory, a `foo::Builder<'a>` ought to act
-like a `&'a mut Foo`.
-Note that `Foo` here is a pretend type
-that cannot directly exist in Rust,
-because Cap'n Proto struct layout
-differs from Rust struct layout.
+To protect access to that memory, a `foo::Builder<'a>` ought to behave
+as if it were a `&'a mut Foo`,
+even though the `Foo` type
+cannot directly exist in Rust
+(because Cap'n Proto struct layout
+differs from Rust struct layout).
+
+Thus, we need to define `foo::Builder<'a>` as a custom mutable reference.
+
+Built-in mutable references have some special semantics in Rust.
+
+To mimic them, we need to do some things manually.
 
 
-For convenience, mutable references
-have some implicit semantics.
-
-exposes some of the implicit semantics
-of `& mut T`.
-
-The lifetime `'a` tracks the scope of `x`.
-
-
+pass-by-move and reborrowable.
 non-`Copy` and reborrowable.
 
 Suppose we declare a Cap'n Proto schema like this
@@ -79,10 +77,40 @@ fn init_and_return_slice<'a>(foo : foo::Builder<'a>) -> &'a mut [u8] {
 }
 ```
 
+What if we want to call this and then we want to call `set_x()`?
+We can't get our foo back once it has been passed by move
+
+
+```
+fn do_some_things_wrong<'a>(mut foo : foo::Builder<'a>) {
+   let slice = init_and_return_slice(foo);
+   slice[0] = 42;
+   foo.set_x(1.23);
+
+}
+```
+
+
+```
+main.rs:17:9: 17:12 error: cannot borrow `foo` as mutable more than once at a time
+main.rs:17         foo.set_x(1.23);
+                   ^~~
+```
+
 
 ```
 impl <'a> Builder <'a> {
      pub fn borrow<'b>(&'b mut self) -> Builder<'b> { ... }
+}
+```
+
+```
+fn do_some_things_right<'a>(mut foo : foo::Builder<'a>) {
+    {
+        let slice = init_and_return_slice(foo.borrow());
+        slice[0] = 42
+    }
+    foo.set_x(1.23);
 }
 ```
 
