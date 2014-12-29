@@ -161,7 +161,7 @@ inconveniences.
 
 
 Finally, in case you're wondering why we prefer by-move `self` over `&mut self`
-in our generated accessor methods, suppose that also define this type in our schema:
+in our generated accessor methods, suppose that we also define this type in our schema:
 
 ```
 struct Bar {
