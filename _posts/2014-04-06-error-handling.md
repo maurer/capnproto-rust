@@ -150,3 +150,7 @@ you can set the `fail_fast` field of `ReaderOptions` to false,
 on a message-by-message basis. Doing so will
 enable the default-value fall-back described above.
 
+#### update (21 March 2015) <a name="update2"></a>
+
+[New post]({{site.baseurl}}/2015/03/21/error-handling-revisited.html).
+I've switched to explicit `Result`-based error handling.
