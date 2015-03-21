@@ -19,7 +19,7 @@ These changes remove a lot of complexity and
 have allowed me to delete a significant amount of code.
 They also provide, I think, a more honest interface for
 users of the library.
-Now the types of the getter methods
+Now the type signatures of the getter methods
 make it clear exactly where input validation errors
 are possible.
 The `try!()` macro makes it easy enough to deal
