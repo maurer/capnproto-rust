@@ -37,10 +37,11 @@ has become increasingly apparent.
 ## Announcing [GJ](https://github.com/dwrensha/gj)
 
 [GJ](https://github.com/dwrensha/gj) is a new Rust library that provides
-abstractions for concurrency and asynchronous I/O.
+abstractions for event-loop concurrency and asynchronous I/O,
+aiming to meet the needs of Cap'n Proto RPC.
 The main ideas in GJ are taken from
 [KJ](https://capnproto.org/cxxrpc.html#kj-concurrency-framework),
-the library that forms the foundation of capnproto-c++.
+a C++ library that forms the foundation of capnproto-c++.
 At [Sandstorm](https://sandstorm.io), we have been
 successfully using KJ-based concurrency
 in our core infrastructure for a while now,
@@ -51,19 +52,67 @@ and in a
 [Cap'n Proto driver](https://github.com/sandstorm-io/sandstorm/blob/3a3e93eb142969125aa8573df4edc6c62efbeebe/src/sandstorm/fuse.c++)
 to a FUSE filesystem.
 
+The core abstraction in GJ is the `Promise<T>`, representing
+a computation that may eventually resolve to a value of type `T`.
+Instead of blocking, non-immediate operations in GJ
+return a promise that gets fulfilled upon the completion.
+To use a promise, you register a callback with the `then()` method.
+For example:
 
 {% highlight rust %}
-pub fn foo(addr: gj::io::NetwordAddress) -> gj::Promise<()> {
+pub fn connect_then_write(addr: gj::io::NetworkAddress) -> gj::Promise<()> {
     return addr.connect().then(|stream| {
-       stream.write(vec![]).then(|(stream, buf)| {
-
-       });
+       // The connection has succeeded. Let's write some data.
+       return Ok(stream.write(vec![1,2,3]));
+    }).then(|(stream, _)| {
+       // The the first write has succeeded. Let's write some more.
+       return Ok(stream.write(vec![4,5,6]));
+    }).then(|(stream, _)| {
+       // The the second write has succeeded. Let's just return;
+       return Ok(gj::Promise::fulfilled(()));
     });
 }
 {% endhighlight %}
 
+Callbacks registered with `then()` never move between threads, so they do
+not need to be thread-safe.
+In Rust jargon, the callbacks are `FnOnce` closures that does not need to be `Send`.
+Therefore it is easy to share mutable data between them
+without any need for mutexes or atomics. For example, to share a counter,
+you could do this:
+
+{% highlight rust %}
+pub fn ticker(timer: gj::io::Timer,
+              counter: Rc<Cell<u32>>,
+              delay_ms: u64) -> gj::Promise<()> {
+    return timer.after_delay_ms(delay_ms).then(move |()| {
+        println!("the counter is at: {}", counter.get());
+        counter.set(counter.get() + 1);
+        return Ok(ticker(timer, counter, delay_ms));
+    });
+}
+
+pub fn two_tickers() -> gj::Promise<Vec<()>> {
+    let counter = Rc::new(Cell::new(0));
+    return gj::join_promises(vec![ticker(timer, counter.clone(), 500),
+                                  ticker(timer, counter, 750)]);
+}
+{% endhighlight %}
 
 
+If you do want to use multiple threads, GJ makes it easy to set up an
+event loop in each and to communicate between them over streams of bytes.
 
+To learn more, I encourage you to explore some of more complete
+[examples](https://github.com/dwrensha/gj/tree/master/examples)
+in the git repo.
 
+## From C++ to Rust
 
+When I initially set out on the project of porting KJ,
+the big question on my mind was how well the C++ would translate.
+
+Somewhat more heap allocation and reference counting,
+but I suspect that the associated costs are small in the grand scheme of things.
+
+[mio](https://github.com/carllerche/mio)
