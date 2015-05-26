@@ -55,7 +55,7 @@ to a FUSE filesystem.
 The core abstraction in GJ is the `Promise<T>`, representing
 a computation that may eventually resolve to a value of type `T`.
 Instead of blocking, any non-immediate operation in GJ
-returns a promise that gets fulfilled upon the completion.
+returns a promise that gets fulfilled upon the operation's completion.
 To use a promise, you register a callback with the `then()` method.
 For example:
 
