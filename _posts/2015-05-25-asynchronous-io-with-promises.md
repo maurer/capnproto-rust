@@ -34,7 +34,7 @@ its need for a different approach to concurrency
 has become increasingly apparent.
 
 
-## Announcing [GJ](https://github.com/dwrensha/gj)
+## Introducing [GJ](https://github.com/dwrensha/gj)
 
 [GJ](https://github.com/dwrensha/gj) is a new Rust library that provides
 abstractions for event-loop concurrency and asynchronous I/O,
@@ -44,18 +44,18 @@ The main ideas in GJ are taken from
 a C++ library that forms the foundation of capnproto-c++.
 At [Sandstorm](https://sandstorm.io), we have been
 successfully using KJ-based concurrency
-in our core infrastructure for a while now,
-including in a
+in our core infrastructure for a while now;
+some examples you can look at include a
 [bridge](https://github.com/sandstorm-io/sandstorm/blob/3a3e93eb142969125aa8573df4edc6c62efbeebe/src/sandstorm/sandstorm-http-bridge.c++) that translates between
 HTTP and [this Cap'n Proto interface](https://github.com/sandstorm-io/sandstorm/blob/3a3e93eb142969125aa8573df4edc6c62efbeebe/src/sandstorm/web-session.capnp),
-and in a
+and a
 [Cap'n Proto driver](https://github.com/sandstorm-io/sandstorm/blob/3a3e93eb142969125aa8573df4edc6c62efbeebe/src/sandstorm/fuse.c++)
 to a FUSE filesystem.
 
 The core abstraction in GJ is the `Promise<T>`, representing
 a computation that may eventually resolve to a value of type `T`.
-Instead of blocking, non-immediate operations in GJ
-return a promise that gets fulfilled upon the completion.
+Instead of blocking, any non-immediate operation in GJ
+returns a promise that gets fulfilled upon the completion.
 To use a promise, you register a callback with the `then()` method.
 For example:
 
@@ -76,26 +76,25 @@ pub fn connect_then_write(addr: gj::io::NetworkAddress) -> gj::Promise<()> {
 
 Callbacks registered with `then()` never move between threads, so they do
 not need to be thread-safe.
-In Rust jargon, the callbacks are `FnOnce` closures that does not need to be `Send`.
-Therefore it is easy to share mutable data between them
+In Rust jargon, the callbacks are `FnOnce` closures that need not be `Send`.
+This means that you can share mutable data between them
 without any need for mutexes or atomics. For example, to share a counter,
 you could do this:
 
 {% highlight rust %}
-pub fn ticker(timer: gj::io::Timer,
-              counter: Rc<Cell<u32>>,
+pub fn ticker(counter: Rc<Cell<u32>>,
               delay_ms: u64) -> gj::Promise<()> {
-    return timer.after_delay_ms(delay_ms).then(move |()| {
+    return gj::io::Timer.after_delay_ms(delay_ms).then(move |()| {
         println!("the counter is at: {}", counter.get());
         counter.set(counter.get() + 1);
-        return Ok(ticker(timer, counter, delay_ms));
+        return Ok(ticker(counter, delay_ms));
     });
 }
 
 pub fn two_tickers() -> gj::Promise<Vec<()>> {
     let counter = Rc::new(Cell::new(0));
-    return gj::join_promises(vec![ticker(timer, counter.clone(), 500),
-                                  ticker(timer, counter, 750)]);
+    return gj::join_promises(vec![ticker(counter.clone(), 500),
+                                  ticker(counter, 750)]);
 }
 {% endhighlight %}
 
@@ -103,16 +102,28 @@ pub fn two_tickers() -> gj::Promise<Vec<()>> {
 If you do want to use multiple threads, GJ makes it easy to set up an
 event loop in each and to communicate between them over streams of bytes.
 
-To learn more, I encourage you to explore some of more complete
+To learn more about what's possible with GJ,
+I encourage you to explore some of more complete
 [examples](https://github.com/dwrensha/gj/tree/master/examples)
 in the git repo.
 
-## From C++ to Rust
+## Onwards!
 
-When I initially set out on the project of porting KJ,
-the big question on my mind was how well the C++ would translate.
+Two things in particular have made working GJ especially fun so far:
 
-Somewhat more heap allocation and reference counting,
-but I suspect that the associated costs are small in the grand scheme of things.
+  1. KJ is written in clean, modern C++ that translates nicely into idiomatic Rust.
+     The translation is fairly direct most of the time, and parts that don't translate directly make
+     for fun puzzles! For one such nontrival translation, compare KJ's
+     [AsyncOutputStream](https://github.com/sandstorm-io/capnproto/blob/6315eaed384199702240c8d1b8d8186ae55e24e9/c%2B%2B/src/kj/async-io.h#L54)
+     to GJ's
+     [AsyncWrite](https://github.com/dwrensha/gj/blob/8156f3cc89af96024e1bc0001481b11e40bef0f5/src/io.rs#L55).
+  2. The excellent [mio](https://github.com/carllerche/mio) library allows us to not worry
+     about system-specific APIs. It provides a uniform abstraction on top of
+     `epoll` on Linux and `kqueue` on OSX, and maybe someday even `IOCP` in Windows.
 
-[mio](https://github.com/carllerche/mio)
+Although basics of GJ are operational today,
+there's still a lot of work left to do.
+If this is a project that sounds interesting
+or useful to you, I'd love to have your help!
+
+
