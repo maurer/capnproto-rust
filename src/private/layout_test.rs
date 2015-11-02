@@ -61,3 +61,31 @@ fn simple_raw_data_struct() {
     assert_eq!(reader.get_bool_field(63), true);
     assert_eq!(reader.get_bool_field(64), false);
 }
+
+#[test]
+fn simple_struct_canonical() {
+    let data : ::private::AlignedData<[u8; 16]> = ::private::AlignedData {
+        _dummy: 0,
+        data : [0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+                0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef]
+    };
+
+    let reader = unsafe { ::private::layout::PointerReader::get_root_unchecked(
+        ::std::mem::transmute(data.data.as_ptr())) };
+
+    assert!(reader.is_canonical().unwrap())
+}
+
+#[test]
+fn untrunc_data_non_cannonical() {
+    let data : ::private::AlignedData<[u8; 16]> = ::private::AlignedData {
+        _dummy: 0,
+        data : [0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+    };
+
+    let reader = unsafe { ::private::layout::PointerReader::get_root_unchecked(
+        ::std::mem::transmute(data.data.as_ptr())) };
+
+    assert!(!reader.is_canonical().unwrap())
+}

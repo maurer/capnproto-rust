@@ -44,6 +44,7 @@ pub enum ElementSize {
     InlineComposite = 7
 }
 
+
 pub fn data_bits_per_element(size : ElementSize) -> BitCount32 {
     match size {
         Void => 0,
@@ -338,6 +339,27 @@ mod wire_helpers {
         pub value : T,
     }
 
+    macro_rules! canon {
+        ($canon:expr) => (match $canon {
+            Ok(Canonicity::Canonical(b, l)) => (b, l),
+            other => { return other; }
+        })
+    }
+
+    #[derive(Clone, Copy, PartialEq)]
+    #[must_use]
+    pub enum Canonicity {
+        NonPreorder,            // Object tree not in preorder.
+        MultiSegment,           // Message utilizes multiple segments
+        NonTruncatedData,       // Non-list struct data section contains trailing 0 word
+        NonTruncatedPtr,        // Non-list struct ptr section contains trailing 0 word
+        NonTruncatedListData,   // Every element in a struct list data section contains a trailing 0 word
+        NonTruncatedListPtr,    // Every element in a struct list pointer section contains a trailing 0 word
+        Capability,             // Canonicity for capabilities is unclear, fail.
+        EmptySpace,             // An area of the segment was "skipped" moving forwards
+        Canonical(*const Word, usize), // Canonical message starting at the pointer of the given length
+    }
+
     #[inline]
     pub fn round_bytes_up_to_words(bytes : ByteCount32) -> WordCount32 {
         //# This code assumes 64-bit words.
@@ -612,6 +634,215 @@ mod wire_helpers {
         }
         ::std::ptr::write_bytes(reff, 0, 1);
         Ok(())
+    }
+
+    pub unsafe fn canonicity(segment : *const SegmentReader,
+                             reff : *const WirePointer,
+                             mut nesting_limit : i32) -> Result<Canonicity> {
+        use self::Canonicity::*;
+        use ::std::ptr::null;
+        if (*reff).is_null() { return Ok(Canonical(null(), 0)) };
+
+        if nesting_limit <= 0 {
+            return Err(Error::new_decode_error("Message is too deeply nested", None));
+        }
+
+        nesting_limit -= 1;
+
+        let ptr = (*reff).target();
+
+        match (*reff).kind() {
+            WirePointerKind::Struct => {
+                try!(bounds_check(segment, ptr, ptr.offset((*reff).struct_ref().word_size() as isize),
+                                  WirePointerKind::Struct));
+
+                let mut total_size : usize = 0;
+
+                // The last word in the data section must not be zero (it should have been truncated)
+                let data_size : isize = (*reff).struct_ref().data_size.get() as isize;
+                if data_size >= 1 { // There is at least one word
+                    let last_data : *const Word = ptr.offset(data_size - 1);
+                    if *last_data == Word(0) {
+                        return Ok(NonTruncatedData)
+                    }
+                };
+                total_size += data_size as usize;
+
+                // Load up the pointer section
+                let pointer_section : *const WirePointer =
+                    ::std::mem::transmute(ptr.offset(data_size));
+                let ptr_count : isize = (*reff).struct_ref().ptr_count.get() as isize;
+                // The last pointer in the pointer section must not be null (it should have been truncated)
+                if ptr_count > 0 {
+                    if (*pointer_section.offset(ptr_count - 1)).is_null() {
+                        return Ok(NonTruncatedPtr)
+                    }
+                }
+                total_size += ptr_count as usize;
+
+                // Check each pointer for validity in sequence,
+                let mut next_ptr : *const Word = ::std::mem::transmute(pointer_section.offset(ptr_count));
+                for i in 0..ptr_count {
+                    let (start, size) = canon!(canonicity(segment, pointer_section.offset(i), nesting_limit));
+                    if start.is_null() {
+                        assert_eq!(size, 0)
+                    };
+                    if (start != next_ptr) && (!start.is_null()) {
+                        return Ok(NonPreorder)
+                    };
+                    next_ptr = next_ptr.offset(size as isize);
+                    total_size += size;
+                }
+                return Ok(Canonical(ptr, total_size));
+            }
+            WirePointerKind::List => {
+                match (*reff).list_ref().element_size() {
+                    Void => {return Ok(Canonical(null(), 0))}
+                    Bit | Byte | TwoBytes | FourBytes | EightBytes => {
+                        let total_words = round_bits_up_to_words(
+                            (*reff).list_ref().element_count() as u64 *
+                                data_bits_per_element((*reff).list_ref().element_size()) as u64);
+                        try!(bounds_check(segment, ptr, ptr.offset(total_words as isize), WirePointerKind::List));
+                        return Ok(Canonical(ptr, total_words as usize));
+                    }
+                    Pointer => {
+                        let mut total_size : usize = 0;
+
+                        let ptr_count = (*reff).list_ref().element_count();
+                        try!(bounds_check(segment, ptr, ptr.offset((ptr_count * WORDS_PER_POINTER as u32) as isize),
+                                          WirePointerKind::List));
+                        total_size += ptr_count as usize;
+
+                        let mut next_ptr : *const Word = ::std::mem::transmute(ptr.offset(ptr_count as isize));
+                        let pointer_section : *const WirePointer = ::std::mem::transmute(ptr);
+
+                        for i in 0..ptr_count as isize {
+                            let (start, size) = canon!(canonicity(segment, pointer_section.offset(i), nesting_limit));
+                            if start.is_null() {
+                                assert_eq!(size, 0)
+                            };
+                            if (start != next_ptr) && (!start.is_null()) {
+                                return Ok(NonPreorder)
+                            };
+                            next_ptr = next_ptr.offset(size as isize);
+                            total_size += size;
+                        }
+
+                        return Ok(Canonical(ptr, total_size))
+                    }
+                    InlineComposite => {
+                        let mut total_size : usize = 0;
+
+                        let word_count = (*reff).list_ref().inline_composite_word_count();
+                        try!(bounds_check(segment, ptr,
+                                          ptr.offset(word_count as isize + POINTER_SIZE_IN_WORDS as isize),
+                                          WirePointerKind::List));
+
+                        let element_tag : *const WirePointer = ::std::mem::transmute(ptr);
+                        let count = (*element_tag).inline_composite_list_element_count();
+
+                        if (*element_tag).kind() != WirePointerKind::Struct {
+                            return Err(Error::new_decode_error(
+                                "Don't know how to handle non-STRUCT inline composite.", None));
+                        }
+
+                        if (*element_tag).struct_ref().word_size() as u64 * count as u64 != word_count as u64 {
+                            return Err(Error::new_decode_error(
+                                "InlineComposite list's elements under or overrun its word count.", None));
+                        }
+
+                        let data_size = (*element_tag).struct_ref().data_size.get();
+                        let pointer_count = (*element_tag).struct_ref().ptr_count.get();
+
+                        total_size += POINTER_SIZE_IN_WORDS;
+
+                        let mut next_ptr : *const Word = ptr.offset(word_count as isize + POINTER_SIZE_IN_WORDS as isize);
+
+                        if count == 0 {
+                            if data_size != 0 {
+                                return Ok(NonTruncatedListData);
+                            }
+                            if pointer_count != 0 {
+                                return Ok(NonTruncatedListPtr);
+                            }
+                            return Ok(Canonical(ptr, total_size));
+                        };
+
+                        let mut pos : *const Word = ptr.offset(POINTER_SIZE_IN_WORDS as isize);
+                        let mut data_trunc =
+                            if data_size == 0 {
+                                true  // Trivially truncated
+                            } else {
+                                false // Need to see a nonzero word
+                            };
+                        let mut pointer_trunc =
+                            if pointer_count == 0 {
+                                true  // Trivially truncated
+                            } else {
+                                false // Need to see a nonzero word
+                            };
+                        for _ in 0..count {
+
+                            pos = pos.offset(data_size as isize);
+                            // If we have data, and the last word is non-null,
+                            // truncation has been done right
+                            if data_size >= 1 {
+                                data_trunc |= *(pos.offset(-1)) != Word(0);
+                            }
+                            total_size += data_size as usize;
+
+                            let pointer_section : *const WirePointer = ::std::mem::transmute(pos);
+
+                            for i in 0..pointer_count as isize {
+                                let (start, size) = canon!(canonicity(segment, pointer_section.offset(i), nesting_limit));
+                                if start.is_null() {
+                                    assert_eq!(size, 0)
+                                };
+                                if (start != next_ptr) && (!start.is_null()) {
+                                    return Ok(NonPreorder)
+                                };
+                                next_ptr = next_ptr.offset(size as isize);
+                                total_size += size;
+                            }
+                            pos = pos.offset(pointer_count as isize);
+                            total_size += pointer_count as usize;
+
+                            // If we have pointers, and the last word is non-null,
+                            // trunctaion has been done right
+                            if pointer_count >= 1 {
+                                pointer_trunc |= *(pos.offset(-1)) != Word(0);
+                            }
+                        }
+                        // There was never a nonzero trailing data word, and data_size was nonzero
+                        if !data_trunc {
+                            return Ok(NonTruncatedListData);
+                        };
+                        // There was never a nonzero trailing pointer, and pointer_size was nonzero
+                        if !pointer_trunc {
+                            return Ok(NonTruncatedListPtr);
+                        }
+                        return Ok(Canonical(ptr, total_size))
+                    }
+                }
+            }
+            WirePointerKind::Far => {
+                // Far pointers do not occur in canonical messages, as there is
+                // only one segment.
+                Ok(MultiSegment)
+            }
+            WirePointerKind::Other => {
+                if (*reff).is_capability() {
+                    // Capabilities are not mentioned in the canonicalization
+                    // spec, so I assume they are non-canonical.
+                    Ok(Capability)
+                } else {
+                    return Err(Error::new_decode_error("Unknown pointer type.", None));
+                }
+            }
+        }
+
+
+
     }
 
     pub unsafe fn total_size(mut segment : *const SegmentReader,
@@ -1855,6 +2086,8 @@ pub struct PointerReader<'a> {
     nesting_limit : i32
 }
 
+pub use self::wire_helpers::Canonicity;
+
 impl <'a> PointerReader<'a> {
     pub fn new_default<'b>() -> PointerReader<'b> {
         PointerReader {
@@ -1932,6 +2165,36 @@ impl <'a> PointerReader<'a> {
     pub fn total_size(&self) -> Result<MessageSize> {
         unsafe {
             wire_helpers::total_size(self.segment, self.pointer, self.nesting_limit)
+        }
+    }
+
+    /// Checks whether a message root pointer is canonical.
+    pub fn is_canonical(&self) -> Result<bool> {
+        unsafe {
+            // If we have no segment, ignore message tier checks
+            if !self.segment.is_null() {
+                if self.pointer != ::std::mem::transmute((*self.segment).ptr) {
+                    // This is not a root poitner, it is not canonical
+                    return Ok(false);
+                }
+            }
+
+            match try!(wire_helpers::canonicity(self.segment, self.pointer, self.nesting_limit)) {
+                Canonicity::Canonical(start, size) => {
+                    if start != ::std::mem::transmute(self.pointer.offset(1)) {
+                        // Packed preorder fails
+                        return Ok(false);
+                    }
+                    if !self.segment.is_null() {
+                        if size != (*self.segment).size as usize {
+                            // There are extra bytes at the end, fail
+                            return Ok(false);
+                        }
+                    }
+                    Ok(true)
+                },
+                _ => Ok(false),
+            }
         }
     }
 }

@@ -80,6 +80,10 @@ impl <'a> Reader<'a> {
 
         pointer.get_capability()
     }
+
+    pub fn is_canonical(&self) -> Result<bool> {
+        self.reader.is_canonical()
+    }
 }
 
 impl <'a> FromPointerReader<'a> for Reader<'a> {

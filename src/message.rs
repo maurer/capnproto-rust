@@ -153,6 +153,18 @@ impl <S> Reader<S> where S: ReaderSegments {
     pub fn into_segments(self) -> S {
         *self.segments
     }
+
+    pub fn is_canonical(&self) -> Result<bool> {
+        // The message contained additional segments
+        if !self.arena.more_segments.is_empty() {
+            return Ok(false);
+        };
+        // The message contained a cap table
+        if !self.arena.cap_table.is_empty() {
+            return Ok(false);
+        };
+        try!(self.get_root_internal()).is_canonical()
+    }
 }
 
 /// An object that allocates memory for a Cap'n Proto message as it is being built.
@@ -233,6 +245,19 @@ impl <A> Builder<A> where A: Allocator {
 
     pub fn get_cap_table<'a>(&'a self) -> &'a [Option<Box<ClientHook+Send>>] {
         self.arena.get_cap_table()
+    }
+
+    // TODO this shouldn't need mut, if I do it right it can be ro
+    pub fn is_canonical(&mut self) -> Result<bool> {
+        // The message contained additional segments
+        if !self.arena.more_segments.is_empty() {
+            return Ok(false);
+        };
+        // The message contained a cap table
+        if !self.arena.cap_table.is_empty() {
+            return Ok(false);
+        };
+        self.get_root_internal().as_reader().is_canonical()
     }
 }
 
