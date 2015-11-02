@@ -19,7 +19,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-use {Word, Result};
+use {Word, Result, MessageSize};
 use private::layout::{StructReader, StructBuilder, StructSize, PointerBuilder, PointerReader};
 
 pub trait FromStructReader<'a> {
@@ -78,6 +78,10 @@ pub trait FromPointerBuilderRefDefault<'a> {
 
 pub trait SetPointerBuilder<To> {
     fn set_pointer_builder<'a>(PointerBuilder<'a>, Self) -> Result<()>;
+}
+
+pub trait TotalSize {
+    fn total_size(&self) -> Result<MessageSize>;
 }
 
 pub trait HasTypeId {

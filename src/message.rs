@@ -26,7 +26,7 @@ use private::capability::ClientHook;
 use private::units::*;
 use private::arena::{BuilderArena, ReaderArena, SegmentBuilder, SegmentReader};
 use private::layout;
-use traits::{FromPointerReader, FromPointerBuilder, SetPointerBuilder};
+use traits::{FromPointerReader, FromPointerBuilder, SetPointerBuilder, TotalSize};
 use {OutputSegments, Result, Word};
 
 /// Options controlling how data is read.
@@ -200,6 +200,20 @@ impl <A> Builder<A> where A: Allocator {
         };
         let arena = BuilderArena::new(boxed_allocator_ref);
         Builder { arena: arena, allocator: boxed_allocator }
+    }
+
+    pub fn canonicalize<To, From : SetPointerBuilder<To> + TotalSize>(allocator : A, value : From) -> Result<Builder<A>> {
+        let mut builder = Builder::new(allocator);
+        // This is a fresh builder, nothing should be allocated
+        assert_eq!(builder.arena.segment0.current_size(), 0);
+        // Allocate a segment big enough for the whole message
+        let size = try!(value.total_size()).word_count;
+        builder.arena.segment0.allocate(size as u32 + WORDS_PER_POINTER as u32);
+        try!(builder.get_root_internal().set_as(value));
+        // I think SetPointerBuilder as constructed is making canonical values,
+        // if this assert fails, then this is incorrect
+        assert!(try!(builder.is_canonical()));
+        Ok(builder)
     }
 
     fn get_root_internal<'a>(&mut self) -> any_pointer::Builder<'a> {

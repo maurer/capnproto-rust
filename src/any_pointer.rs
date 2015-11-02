@@ -25,7 +25,7 @@ use capability::FromClientHook;
 use private::capability::{ClientHook, PipelineHook, PipelineOp};
 use private::layout::{PointerReader, PointerBuilder};
 use traits::{FromPointerReader, FromPointerBuilder, SetPointerBuilder};
-use Result;
+use {MessageSize, Result};
 
 #[derive(Copy, Clone)]
 pub struct Owned(());
@@ -83,6 +83,10 @@ impl <'a> Reader<'a> {
 
     pub fn is_canonical(&self) -> Result<bool> {
         self.reader.is_canonical()
+    }
+
+    pub fn total_size(&self) -> Result<MessageSize> {
+        self.reader.total_size()
     }
 }
 
