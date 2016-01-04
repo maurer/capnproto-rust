@@ -346,7 +346,7 @@ mod wire_helpers {
         })
     }
 
-    #[derive(Clone, Copy, PartialEq)]
+    #[derive(Clone, Copy, PartialEq, Debug)]
     #[must_use]
     pub enum Canonicity {
         NonPreorder,            // Object tree not in preorder.
@@ -2175,6 +2175,7 @@ impl <'a> PointerReader<'a> {
             if !self.segment.is_null() {
                 if self.pointer != ::std::mem::transmute((*self.segment).ptr) {
                     // This is not a root poitner, it is not canonical
+                    panic!("Not root pointer");
                     return Ok(false);
                 }
             }
@@ -2183,17 +2184,19 @@ impl <'a> PointerReader<'a> {
                 Canonicity::Canonical(start, size) => {
                     if start != ::std::mem::transmute(self.pointer.offset(1)) {
                         // Packed preorder fails
+                        panic!("Message doesn't start one after pointer: {:?} != {:?}", start, self.pointer.offset(1));
                         return Ok(false);
                     }
                     if !self.segment.is_null() {
                         if size != (*self.segment).size as usize {
                             // There are extra bytes at the end, fail
+                            panic!("oversize message");
                             return Ok(false);
                         }
                     }
                     Ok(true)
                 },
-                _ => Ok(false),
+                reason => {panic!(format!("{:?}", reason)); Ok(false)},
             }
         }
     }

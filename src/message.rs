@@ -157,10 +157,12 @@ impl <S> Reader<S> where S: ReaderSegments {
     pub fn is_canonical(&self) -> Result<bool> {
         // The message contained additional segments
         if !self.arena.more_segments.is_empty() {
+            panic!("too many segments");
             return Ok(false);
         };
         // The message contained a cap table
         if !self.arena.cap_table.is_empty() {
+            panic!("caps");
             return Ok(false);
         };
         try!(self.get_root_internal()).is_canonical()
